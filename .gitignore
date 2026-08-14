@@ -1,0 +1,5 @@
+.env
+hermes-data/.env
+hermes-data/sessions/
+hermes-data/memories/
+*.tar.gz

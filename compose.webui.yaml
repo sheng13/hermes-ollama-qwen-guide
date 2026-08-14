@@ -1,0 +1,17 @@
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: hermes-open-webui
+    restart: unless-stopped
+    depends_on: [hermes]
+    environment:
+      OPENAI_API_BASE_URL: http://hermes:8642/v1
+      OPENAI_API_KEY: ${API_SERVER_KEY}
+      ENABLE_OLLAMA_API: "false"
+    volumes:
+      - open-webui-data:/app/backend/data
+    ports:
+      - "127.0.0.1:3000:8080"
+    networks: [hermes-net]
+volumes:
+  open-webui-data:

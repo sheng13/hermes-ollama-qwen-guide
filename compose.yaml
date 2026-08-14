@@ -1,0 +1,49 @@
+name: hermes-qwen
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: hermes-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_CONTEXT_LENGTH: "64000"
+      OLLAMA_KEEP_ALIVE: "24h"
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [hermes-net]
+
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: hermes-agent
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    command: gateway run
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"
+      API_SERVER_KEY: "${API_SERVER_KEY:?请先在 .env 设置 API_SERVER_KEY}"
+      API_SERVER_CORS_ORIGINS: "http://localhost:3000,http://127.0.0.1:3000"
+      HERMES_API_TIMEOUT: "1800"
+      HERMES_STREAM_READ_TIMEOUT: "1800"
+    volumes:
+      - ./hermes-data:/opt/data
+      # Hermes 只可操作这个目录；不要挂载 /、~/.ssh 或 Docker socket。
+      - ./workspace:/workspace
+    working_dir: /workspace
+    ports:
+      - "127.0.0.1:8642:8642"
+    networks: [hermes-net]
+
+volumes:
+  ollama-models:
+networks:
+  hermes-net:
+    driver: bridge
