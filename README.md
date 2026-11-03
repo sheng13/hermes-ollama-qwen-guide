@@ -1,3 +1,78 @@
+![Hermes、Ollama 與 Qwen 本機 Agent 教學](docs/readme-banner.svg)
+
+# Hermes Agent + Ollama + Qwen 部署筆記
+
+以 Docker Compose 分開執行 Hermes Agent 與 Ollama，由 Hermes 透過 OpenAI 相容 API 呼叫 Qwen。這份教學保留從 Docker 安裝、CPU／NVIDIA 路線、模型與上下文設定，到 CLI、Open WebUI、備份與故障排查的完整操作流程。
+
+> **版本脈絡：原教學更新基準為 2026-08-14，適用 Ubuntu 22.04／24.04。** 本頁整理閱讀入口，未把原指令改寫成「目前版本」設定，也沒有重新部署或證明模型可用。`latest`／`main` 標籤會變動，實作前請依官方文件確認自己使用的映像與設定。
+
+[閱讀路線](#reading) · [檔案與設定](#files) · [操作檢查順序](#checks) · [安全邊界](#safety) · [原始操作全文](#tutorial)
+
+<a id="reading"></a>
+## 閱讀路線
+
+| 想完成的事 | 原始教學章節 |
+|---|---|
+| 從零建立環境 | 第 1–7 節：架構、硬體、Docker、NVIDIA、密鑰與 Compose 網路 |
+| 先讓模型與 Agent 連通 | 第 8–13 節：啟動 Ollama、下載 Qwen、64K、自訂模型、Hermes setup 與 CLI |
+| 維護與排錯 | 第 14–20 節：模型管理、安全、驗收、停止與恢復、官方資料、最短路線 |
+| 看懂部署細節 | 第 21–29 節：記憶體估算、CPU／GPU、虛擬機差異、掛載權限與 Python API |
+| 加上網頁介面與長期維護 | 第 30–40 節：Open WebUI、區網、效能、版本固定、備份、監控與重建清單 |
+
+初次部署請依第 1–13 節逐步操作，再完成第 17 節驗收；有經驗的讀者可對照第 27 節逐條檢查。原文與程式碼一併保留於下方，複製指令前請先讀完相鄰的限制與注意事項。
+
+<a id="files"></a>
+## 檔案與設定對照
+
+| 路徑 | 儲存庫實際內容 |
+|---|---|
+| [compose.yaml](compose.yaml) | `hermes-qwen` 專案；`ollama` 與 `hermes` 服務；`hermes-net` 網路；只向宿主機回環位址發布 `11434`、`8642` |
+| [compose.nvidia.yaml](compose.nvidia.yaml) | 對 `ollama` 加上 `gpus: all`，搭配主 Compose 使用 |
+| [compose.webui.yaml](compose.webui.yaml) | 選用 Open WebUI，宿主機 `127.0.0.1:3000`；連到 `http://hermes:8642/v1` |
+| [Modelfile](Modelfile) | `FROM qwen3.5:27b`、`num_ctx 64000`、`temperature 0.6` |
+| [hermes-data/config.yaml](hermes-data/config.yaml) | 原範例為 `provider: custom`、`default: qwen3.5:27b`、`base_url: http://ollama:11434/v1`、`context_length: 64000` |
+| `.env.example` | 密鑰範本；依原教學在本機建立真正的 `.env`，不要提交實際值 |
+| [workspace/](workspace/) | 專用練習目錄，掛載到 Hermes 容器的 `/workspace` |
+| `docs/readme-banner.svg` | 紅黑設計橫幅，不是成功部署截圖 |
+
+```text
+Hermes :8642 ── http://ollama:11434/v1 ──→ Ollama → Qwen
+    │                                        │
+./hermes-data → /opt/data            ollama-models → /root/.ollama
+./workspace   → /workspace
+```
+
+`localhost` 在容器內只代表該容器。此雙容器範例沿用 Compose 服務名 `ollama`，不能直接把原生安裝教學的 `localhost` 位址套進來。
+
+<a id="checks"></a>
+## 操作檢查順序
+
+1. 先確認可用硬體與 Docker。64K 是這份範例的上下文設定與原教學前提，不代表每個模型或機器都能可靠執行工具。
+2. 依原教學建立隨機 `API_SERVER_KEY`，不要重複使用範例值。Compose 展開結果可能包含密鑰，不能公開分享。
+3. 只啟動 Ollama，下載並直接測試原教學指定的模型，再確認實際載入的上下文。模型標籤、硬體用量與可用性需由使用者自行驗證。
+4. 核對設定檔與容器間連線，再啟動 Hermes；先以 CLI 做唯讀任務，最後才測試寫入或其他工具。
+5. 確定持久資料與備份後，再考慮 Open WebUI、區網存取、更新與恢復。不要用重建或刪卷掩蓋不明錯誤。
+
+原文中的 `/home/wsfoo/games/hermes-ollama-qwen` 是作者當時使用的目錄，不是本儲存庫固定的 clone 位置；執行前請先進入自己實際存放 `compose.yaml` 的目錄。原文 API 範例中的 `Bearer ***` 是遮罩，不是可用密鑰。
+
+<a id="safety"></a>
+## 安全邊界
+
+- 只掛載專用 `workspace`；不要掛入整個主目錄、SSH 私鑰、瀏覽器資料或 Docker socket。Agent 能呼叫工具，模型在本機不代表每個操作都只影響本機。
+- 模型推理可在本機完成，但鏡像、模型下載及網頁搜尋等外部工具仍可能連網；不要把「本機模型」當作資料絕不離機的保證。
+- `hermes-data` 會包含設定、會話與記憶，備份若包含 `.env` 就包含秘密。備份、展開後的 Compose、日誌與診斷輸出不得公開。
+- 原文保留升級、恢復與 `docker compose down -v` 等操作。刪除模型卷、停止服務、改防火牆或重新啟動 Docker 前，先確認影響與備份；這些不是必要的閱讀步驟。
+- `.env` 是本機秘密檔。原文使用 `source .env` 的示例只適用於自己建立並審閱的檔案，不要載入來路不明的 shell 內容。
+- 原 Compose 使用 `latest` 與 Open WebUI `main`；本頁不替它們推定目前相容版本。原設定與命令維持原樣，沒有自動遷移或執行服務修復。
+
+<a id="tutorial"></a>
+## 原始操作全文
+
+以下保留原始 40 節教學的用語、指令、模型標籤與 2026-08-14 基準；其中「目前／最低要求」應按原文件脈絡理解，不是本次對新版本的承諾。官方資料入口在原文第 19 節。
+
+<details>
+<summary>展開逐步教學、進階說明與命令速查表（原文保留）</summary>
+
 # Hermes Agent + Ollama + Qwen + Docker：从零到可用完整教程
 
 > 适用环境：Ubuntu 22.04 / 24.04（实体机或虚拟机）  
@@ -1428,3 +1503,5 @@ docker compose run --rm --entrypoint hermes hermes
 15. 最后才考虑局域网或公网开放。
 
 执行到这里，你不仅“装好了”，也知道每一层如何验证、出错时从哪里开始查。
+
+</details>
